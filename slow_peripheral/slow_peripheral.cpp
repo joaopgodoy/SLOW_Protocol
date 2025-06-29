@@ -111,18 +111,21 @@
  
  // Imprime Header
  void printHeader(const Header& h, const string& label) {
-     cout << "==== " << label << " ====" << endl;
-     cout << "SID: ";
-     for (int i = 0; i < 16; i++)
-         cout << hex << setw(2) << setfill('0') << (int)h.sid.b[i];
-     cout << dec << endl;
-     cout << "Flags: " << (h.sf & 0x1F) << endl;
-     cout << "SEQ: "  << h.seq << endl;
-     cout << "ACK: "  << h.ack << endl;
-     cout << "WND: "  << h.wnd << endl;
-     cout << "FID: "  << (int)h.fid << endl;
-     cout << "FO: "   << (int)h.fo << endl << endl;
- }
+    cout << "---- " << label << " ----\n";
+    cout << "SID: ";
+    for (int i = 0; i < 16; i++)
+        cout << hex << setw(2) << setfill('0') << (int)h.sid.b[i];
+    cout << dec << "\n";
+    uint32_t flags =  h.sf & 0x1F;
+    uint32_t sttl  = (h.sf >> 5) & 0x07FFFFFF;
+    cout << "Flags: 0x" << hex << flags << dec << " ("<<flags<<")\n";
+    cout << "STTL: "    << sttl  << "\n";
+    cout << "SEQNUM: "  << h.seq  << "\n";
+    cout << "ACKNUM: "  << h.ack  << "\n";
+    cout << "WINDOW: "  << h.wnd  << "\n";
+    cout << "FID: "     << (int)h.fid << "\n";
+    cout << "FO: "      << (int)h.fo  << "\n\n";
+}
  
  // Encapsula o socket e a lógica do protocolo SLOW.
  class UDPPeripheral {
@@ -203,7 +206,8 @@
 
         return true; //handshake bem sucedido
      }
- 
+     
+     
      // Envia mensagem, fragmentando se necessário e aguardando ACK
      bool sendData(const string& msg) {
          if (!active) return false; //verifica se a sessão está ativa
@@ -211,8 +215,10 @@
          // Função lambda para enviar cada fragmento
          auto sendFrag = [&](const char* data, size_t len, uint8_t fid, uint8_t fo, bool more) {
             //verifica se essa quantidade de bytes pode ser mandada baseada na janela atual
-            if (bytesInFlight + len > window_size) return false;
-
+            if (bytesInFlight + len > window_size) {
+                cout << "Janela cheia, esperando ACK..." << endl;
+                return false;
+            }
             //monta o header baseado no último header recebido
             Header h = prevHdr;
             h.seq = nextSeq++; //número da sequência
@@ -232,6 +238,9 @@
             printHeader(h, "DATA");
 
             if (sendto(fd, buf, HDR_SIZE + len, 0, (sockaddr*)&srv, sizeof(srv)) >= 0){
+                cout << "PAYLOAD (" << len << " bytes): \""
+                << string(data, len < 50 ? len : 50) << (len > 50 ? "..." : "") << "\"\n\n";
+
                 bytesInFlight += len;
 
                 return true;
@@ -281,12 +290,12 @@
                     continue; //volta para o início do loop para tentar enviar novamente
                 }
 
-                bool more = (off + len < msg.size()); //se será necessário ter mais fragmentos ou não
+                bool more = (off + EspacoJanela < msg.size()); //se será necessário ter mais fragmentos ou não
 
-                if (!sendFrag(msg.data() + off, len, fid, fo, more)) return false; //envia a mensagem
+                if (!sendFrag(msg.data() + off, EspacoJanela, fid, fo, more)) return false; //envia a mensagem
 
                 fo += 1;
-                off += len; //incrementa o off
+                off += EspacoJanela; //incrementa o off
 
                 // Se ainda há dados para enviar e a janela está cheia, espera ACK
                 if (more && (bytesInFlight + min((size_t)DATA_MAX, (size_t)(msg.size() - off)) > window_size)) {
@@ -390,6 +399,7 @@
              hasPrev = true;
          }
      }
+
      bool canRevive() const { return hasPrev; }
      bool isActive() const { return active; }
  };
@@ -427,10 +437,10 @@
                  cerr << "Erro ao enviar dados." << endl;
  
          } else if (cmd == "disconnect") {
-             client.storeSession(); // armazena a sessão atual para possível revive
+            client.storeSession(); // armazena a sessão atual para possível revive
 
-             if (client.disconnect()) //faz o disconnect
-                 cout << "Desconectado com sucesso." << endl;
+            if (client.disconnect()) //faz o disconnect
+                cout << "Desconectado com sucesso." << endl;
             else {
                 cout << "Fala ao desconecatar." << endl;
             }
