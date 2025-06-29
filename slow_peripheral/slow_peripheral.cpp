@@ -239,6 +239,28 @@
 
             return false;
          };
+        
+        // Função lambda para esperar ACK de fragmento
+        auto esperaAck = [&]() -> bool {
+            uint8_t rbuf[HDR_SIZE];
+            sockaddr_in sa; socklen_t sl = sizeof(sa);
+            if (recvfrom(fd, rbuf, HDR_SIZE, 0, (sockaddr*)&sa, &sl) < HDR_SIZE)
+                return false;
+
+            Header r; deserialize(r, rbuf);
+            printHeader(r, "Pacote Recebido (ACK DATA)");
+            
+            if (!(r.sf & FLAG_ACK)) return false;
+
+            // Atualiza controle de fluxo e janela
+            bytesInFlight   = 0;
+            lastCentralSeq  = r.seq;
+            prevHdr         = r;
+            nextSeq         = lastCentralSeq + 1;
+            window_size     = r.wnd; // Atualiza a janela com o valor mais recente do servidor
+            
+            return true;
+        };
  
          // Fragmenta se a mensagem exceder DATA_MAX
          if (msg.size() > DATA_MAX) {
@@ -249,43 +271,45 @@
                 // tamanho do fragmento será o mínimo entre o tamanho máximo ou o tamanho restante da mensagem.
                 size_t len = min(msg.size() - off, static_cast<size_t>(DATA_MAX));
 
+                //verifica se o tamanho do fragmento cabe na janela
+                size_t EspacoJanela = min(len, (size_t)(window_size - bytesInFlight)); 
+
+                if (EspacoJanela == 0) {
+                    // Se não houver espaço, espera ACK de fragmento anterior
+                    if (!esperaAck()) return false; //se não receber ACK, retorna falso
+
+                    continue; //volta para o início do loop para tentar enviar novamente
+                }
+
                 bool more = (off + len < msg.size()); //se será necessário ter mais fragmentos ou não
 
                 if (!sendFrag(msg.data() + off, len, fid, fo, more)) return false; //envia a mensagem
 
                 fo += 1;
                 off += len; //incrementa o off
+
+                // Se ainda há dados para enviar e a janela está cheia, espera ACK
+                if (more && (bytesInFlight + min((size_t)DATA_MAX, (size_t)(msg.size() - off)) > window_size)) {
+                    if (!esperaAck()) return false;
+                }
             }
+
+            //ter certeza que temos o ACK finals    
+            return esperaAck();
+
          } else {
             // mensagemn pequena é enviada em um único fragmento
 
             if (msg.size() <= window_size){ //verificar se é possível mandar a mensagem dentro da janela
                 if (!sendFrag(msg.data(), msg.size(), 0, 0, false)) return false; //enviar a mensagem
+
+                return esperaAck(); 
             }
             else{ //mensagem maior que a janela, mas menor que o DATA_MAX]
                 cerr << "Mensagem muito grande para a janela atual." << endl;
                 return false;
             }
          }
- 
-         // Aguarda ACK do servidor para todos os fragmentos
-         uint8_t rbuf[HDR_SIZE]; 
-         sockaddr_in sa; socklen_t sl = sizeof(sa);
-         if (recvfrom(fd, rbuf, HDR_SIZE, 0, (sockaddr*)&sa, &sl) < HDR_SIZE)
-             return false;
- 
-         Header r;
-         deserialize(r, rbuf);
-         printHeader(r, "ACK DATA");
-         if (!(r.sf & FLAG_ACK)) return false; //verificar se a flag não for de ACK
- 
-         // Atualiza estado para próxima transmissão
-         bytesInFlight = 0;
-         lastCentralSeq = r.seq;
-         prevHdr = r;
-         nextSeq = r.seq + 1;
-
-         return true;
      }
  
      // Encerra a sessão (DISCONNECT)
@@ -296,9 +320,7 @@
          h.seq = nextSeq++;
          h.ack = lastCentralSeq;
          h.wnd = 0; // zera a janela
-
-         // Flags CONNECT, REVIVE e ACK juntas sinalizam encerramento
-         h.sf = (h.sf & ~0x1F) | FLAG_C | FLAG_R | FLAG_ACK;
+         h.sf = (h.sf & ~0x1F) | FLAG_C | FLAG_R | FLAG_ACK; // Flags CONNECT, REVIVE e ACK juntas sinalizam encerramento
  
          uint8_t buf[HDR_SIZE];
          serialize(h, buf);
