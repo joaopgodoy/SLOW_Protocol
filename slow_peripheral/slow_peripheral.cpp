@@ -230,13 +230,19 @@
             serialize(h, buf);
             memcpy(buf + HDR_SIZE, data, len);
             printHeader(h, "DATA");
-            bytesInFlight += len;
-            return sendto(fd, buf, HDR_SIZE + len, 0, (sockaddr*)&srv, sizeof(srv)) >= 0;
+
+            if (sendto(fd, buf, HDR_SIZE + len, 0, (sockaddr*)&srv, sizeof(srv)) >= 0){
+                bytesInFlight += len;
+
+                return true;
+            }
+
+            return false;
          };
  
          // Fragmenta se a mensagem exceder DATA_MAX
          if (msg.size() > DATA_MAX) {
-             uint8_t fid = nextSeq & 0xFF; //Indetificador único para todos os fragmentos
+            uint8_t fid = nextSeq & 0xFF; //Indetificador único para todos os fragmentos
             
             // for inicia no primeiro byte da mensagem (off = 0); no primeiro fragmento (fo = 0) e vai até o final da mensagem (off < msg.size())
             for (size_t off = 0, fo = 0; off < msg.size();) {
@@ -252,7 +258,14 @@
             }
          } else {
             // mensagemn pequena é enviada em um único fragmento
-            if (!sendFrag(msg.data(), msg.size(), 0, 0, false)) return false;
+
+            if (msg.size() <= window_size){ //verificar se é possível mandar a mensagem dentro da janela
+                if (!sendFrag(msg.data(), msg.size(), 0, 0, false)) return false; //enviar a mensagem
+            }
+            else{ //mensagem maior que a janela, mas menor que o DATA_MAX]
+                cerr << "Mensagem muito grande para a janela atual." << endl;
+                return false;
+            }
          }
  
          // Aguarda ACK do servidor para todos os fragmentos
