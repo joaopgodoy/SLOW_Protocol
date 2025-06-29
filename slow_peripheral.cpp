@@ -137,7 +137,8 @@
      uint32_t nextSeq = 0;         // Próximo número de sequência a usar
      uint32_t lastCentralSeq = 0;  //  último seq recebido do servidor
      uint32_t window_size = 5 * DATA_MAX; // tamanho máximo da janela (5 × 1440 bytes)
-     uint32_t bytesInFlight = 0;   // quantos bytes estão aguardando ACK
+     uint32_t bytesInFlight;   // quantos bytes estão aguardando ACK
+     uint32_t baseSeq; //limite inferior da janela deslizante
  
      // Calcula janela anunciada (até 16 bits)
      uint16_t advertisedWindow() const {
@@ -214,44 +215,48 @@
      
      // Envia mensagem, fragmentando se necessário e aguardando ACK
      bool sendData(const string& msg) {
-         if (!active) return false; //verifica se a sessão está ativa
+        if (!active) return false; //verifica se a sessão está ativa
+
+        baseSeq = nextSeq; //limite inferior da janela
+        bytesInFlight = 0; // por enquanto nenhum byte está sendo mandado
  
-         // Função lambda para enviar cada fragmento
-         auto sendFrag = [&](const char* data, size_t len, uint8_t fid, uint8_t fo, bool more) {
-            //verifica se essa quantidade de bytes pode ser mandada baseada na janela atual
-            if (bytesInFlight + len > window_size) {
-                cout << "Janela cheia, esperando ACK..." << endl;
-                return false;
-            }
-            //monta o header baseado no último header recebido
-            Header h = prevHdr;
-            h.seq = nextSeq++; //número da sequência
-            h.ack = lastCentralSeq;
-            h.wnd = advertisedWindow(); //espaço livre na janela
-
-            // Flags: sempre ACK; MB se ainda houver mais fragmentos
-            h.sf = (h.sf & ~0x1F) | FLAG_ACK | (more ? FLAG_MB : 0);
-
-            h.fid = fid; //qual mensagem o fragmento faz parte
-            h.fo = fo; //indice do fragmento
-
-            //realiza o envio do fragmento
-            uint8_t buf[HDR_SIZE + DATA_MAX];
-            serialize(h, buf);
-            memcpy(buf + HDR_SIZE, data, len);
-            printHeader(h, "Enviado - DATA");
-
-            if (sendto(fd, buf, HDR_SIZE + len, 0, (sockaddr*)&srv, sizeof(srv)) >= 0){
-                cout << "PAYLOAD (" << len << " bytes): \""
-                << string(data, len < 50 ? len : 50) << (len > 50 ? "..." : "") << "\"\n\n";
-
-                bytesInFlight += len;
-
-                return true;
-            }
-
+        // Função lambda para enviar cada fragmento
+        auto sendFrag = [&](const char* data, size_t len, uint8_t fid, uint8_t fo, bool more) {
+        //verifica se essa quantidade de bytes pode ser mandada baseada na janela atual
+        if (bytesInFlight + len > window_size) {
+            cout << "Janela cheia, esperando ACK..." << endl;
             return false;
-         };
+        }
+
+        //monta o header baseado no último header recebido
+        Header h = prevHdr;
+        h.seq = nextSeq++; //número da sequência
+        h.ack = lastCentralSeq;
+        h.wnd = advertisedWindow(); //espaço livre na janela
+
+        // Flags: sempre ACK; MB se ainda houver mais fragmentos
+        h.sf = (h.sf & ~0x1F) | FLAG_ACK | (more ? FLAG_MB : 0);
+
+        h.fid = fid; //qual mensagem o fragmento faz parte
+        h.fo = fo; //indice do fragmento
+
+        //realiza o envio do fragmento
+        uint8_t buf[HDR_SIZE + DATA_MAX];
+        serialize(h, buf);
+        memcpy(buf + HDR_SIZE, data, len);
+        printHeader(h, "Enviado - DATA");
+
+        if (sendto(fd, buf, HDR_SIZE + len, 0, (sockaddr*)&srv, sizeof(srv)) >= 0){
+            cout << "PAYLOAD (" << len << " bytes): \""
+            << string(data, len < 50 ? len : 50) << (len > 50 ? "..." : "") << "\"\n\n";
+
+            bytesInFlight += len;
+
+            return true;
+        }
+
+        return false;
+        };
         
         // Função lambda para esperar ACK de fragmento
         auto esperaAck = [&]() -> bool {
@@ -265,9 +270,20 @@
             
             if (!(r.sf & FLAG_ACK)) return false; //verifica flag
 
-            // Atualiza controle de fluxo e janela
-            bytesInFlight   = 0;
-            lastCentralSeq  = r.seq;
+            uint32_t newAck = r.ack;
+            
+            //quantidade de bytes que foram confirmados
+            uint32_t ackedBytes = newAck - baseSeq;
+
+            //desliza a janela
+            if (ackedBytes >= bytesInFlight)
+                bytesInFlight = 0;
+            else
+                bytesInFlight -= ackedBytes;
+
+            baseSeq = newAck;
+
+            lastCentralSeq  = newAck;   //atualiza o último número de sequência recebido do servidor
             prevHdr         = r;
             nextSeq         = lastCentralSeq + 1;
             window_size     = r.wnd; // atualiza a janela
