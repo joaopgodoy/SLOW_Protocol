@@ -2,8 +2,8 @@
  * slow_peripheral_commented.cpp
  * Autores: 
  *  Enzo Tonon Morente - 14568476 
- *  João Pedro Alves Notari Godoy -
- *  Letícia Barbosa Neves -
+ *  João Pedro Alves Notari Godoy - 14588659
+ *  Letícia Barbosa Neves - 14582076
  * Descrição: Cliente UDP que implementa o protocolo SLOW (Parte 1 do trabalho)
  */
 
@@ -142,7 +142,7 @@
      // Calcula janela anunciada (até 16 bits)
      uint16_t advertisedWindow() const {
          if (bytesInFlight >= window_size)
-             return 0;
+             return 0; //janela está ocupada
          return static_cast<uint16_t>(min<uint32_t>(window_size - bytesInFlight, UINT16_MAX));
      }
  
@@ -183,8 +183,10 @@
         //envia o header
         uint8_t buf[HDR_SIZE];
         serialize(h, buf);
-        sendto(fd, buf, HDR_SIZE, 0, (sockaddr*)&srv, sizeof(srv)); //manda o connect
-        printHeader(h, "CONNECT");
+        printHeader(h, "Enviado - CONNECT");
+        if (sendto(fd, buf, HDR_SIZE, 0, (sockaddr*)&srv, sizeof(srv)) < HDR_SIZE) //manda o connect
+            return false; 
+        
 
         // aguarda SETUP
         uint8_t rbuf[HDR_SIZE + DATA_MAX]; // buffer capaz de armazenar o cabeçalho mais até DATA_MAX bytes de payload.
@@ -195,14 +197,16 @@
 
         Header r;
         deserialize(r, rbuf); //converter header
-        printHeader(r, "SETUP");
+        printHeader(r, "Recebido - ACK(SETUP)");
 
-        if (!(r.sf & FLAG_AR)) return false; // Verifica flag AR de resposta
-    
+        if (r.ack != 0 || !(r.sf & FLAG_AR)) return false; // verifica a flag
+        
+        //ajusta estado interno
         prevHdr = r;
         active = hasPrev = true; //sessão ativa e com histório para revive
         lastCentralSeq = r.seq;
         nextSeq = r.seq + 1;
+        window_size = r.wnd; //tamanho da janela do servidor
 
         return true; //handshake bem sucedido
      }
@@ -235,7 +239,7 @@
             uint8_t buf[HDR_SIZE + DATA_MAX];
             serialize(h, buf);
             memcpy(buf + HDR_SIZE, data, len);
-            printHeader(h, "DATA");
+            printHeader(h, "Enviado - DATA");
 
             if (sendto(fd, buf, HDR_SIZE + len, 0, (sockaddr*)&srv, sizeof(srv)) >= 0){
                 cout << "PAYLOAD (" << len << " bytes): \""
@@ -257,16 +261,16 @@
                 return false;
 
             Header r; deserialize(r, rbuf);
-            printHeader(r, "Pacote Recebido (ACK DATA)");
+            printHeader(r, "RECEBIDO - ACK (DATA)");
             
-            if (!(r.sf & FLAG_ACK)) return false;
+            if (!(r.sf & FLAG_ACK)) return false; //verifica flag
 
             // Atualiza controle de fluxo e janela
             bytesInFlight   = 0;
             lastCentralSeq  = r.seq;
             prevHdr         = r;
             nextSeq         = lastCentralSeq + 1;
-            window_size     = r.wnd; // Atualiza a janela com o valor mais recente do servidor
+            window_size     = r.wnd; // atualiza a janela
             
             return true;
         };
@@ -274,28 +278,35 @@
          // Fragmenta se a mensagem exceder DATA_MAX
          if (msg.size() > DATA_MAX) {
             uint8_t fid = nextSeq & 0xFF; //Indetificador único para todos os fragmentos
-            
-            // for inicia no primeiro byte da mensagem (off = 0); no primeiro fragmento (fo = 0) e vai até o final da mensagem (off < msg.size())
-            for (size_t off = 0, fo = 0; off < msg.size();) {
+            uint8_t fo = 0; // Offset do fragmento (começa em 0)
+            size_t off = 0; // Offset da mensagem (começa em 0)
+
+            // até mandar todos os bytes
+            while(off < msg.size()) {
                 // tamanho do fragmento será o mínimo entre o tamanho máximo ou o tamanho restante da mensagem.
-                size_t len = min(msg.size() - off, static_cast<size_t>(DATA_MAX));
+                size_t QuantidadeAMandar = min(msg.size() - off, static_cast<size_t>(DATA_MAX));
 
                 //verifica se o tamanho do fragmento cabe na janela
-                size_t EspacoJanela = min(len, (size_t)(window_size - bytesInFlight)); 
+                size_t DisponivelParaMandar = min(QuantidadeAMandar, (size_t)(window_size - bytesInFlight)); 
 
-                if (EspacoJanela == 0) {
+                if (DisponivelParaMandar == 0) {
                     // Se não houver espaço, espera ACK de fragmento anterior
                     if (!esperaAck()) return false; //se não receber ACK, retorna falso
 
                     continue; //volta para o início do loop para tentar enviar novamente
                 }
 
-                bool more = (off + EspacoJanela < msg.size()); //se será necessário ter mais fragmentos ou não
+                bool more;
+                if (off + DisponivelParaMandar < msg.size()){
+                    more = true; //se ainda houver mais fragmentos, seta a flag
+                } else {
+                    more = false; //se não houver mais fragmentos, seta a flag como falsa
+                }
 
-                if (!sendFrag(msg.data() + off, EspacoJanela, fid, fo, more)) return false; //envia a mensagem
+                if (!sendFrag(msg.data() + off, DisponivelParaMandar, fid, fo, more)) return false; //envia a mensagem
 
-                fo += 1;
-                off += EspacoJanela; //incrementa o off
+                fo += 1; //novo fragmento
+                off += DisponivelParaMandar; //incrementa o off
 
                 // Se ainda há dados para enviar e a janela está cheia, espera ACK
                 if (more && (bytesInFlight + min((size_t)DATA_MAX, (size_t)(msg.size() - off)) > window_size)) {
@@ -323,32 +334,35 @@
  
      // Encerra a sessão (DISCONNECT)
      bool disconnect() {
-         if (!active) return false; //se não estiver ativo da erro
+        if (!active) return false; //se não estiver ativo da erro
 
-         Header h = prevHdr;
-         h.seq = nextSeq++;
-         h.ack = lastCentralSeq;
-         h.wnd = 0; // zera a janela
-         h.sf = (h.sf & ~0x1F) | FLAG_C | FLAG_R | FLAG_ACK; // Flags CONNECT, REVIVE e ACK juntas sinalizam encerramento
- 
-         uint8_t buf[HDR_SIZE];
-         serialize(h, buf);
-         sendto(fd, buf, HDR_SIZE, 0, (sockaddr*)&srv, sizeof(srv)); //envia o DISCONNECT
-         printHeader(h, "DISCONNECT");
+        Header h = prevHdr;
+        h.seq = nextSeq++;
+        h.ack = lastCentralSeq;
+        h.wnd = 0; // zera a janela
+        h.sf = (h.sf & ~0x1F) | FLAG_C | FLAG_R | FLAG_ACK; // Flags CONNECT, REVIVE e ACK juntas sinalizam encerramento
+
+        uint8_t buf[HDR_SIZE];
+        serialize(h, buf);
+        printHeader(h, "Enviado - DISCONNECT");
+        if (sendto(fd, buf, HDR_SIZE, 0, (sockaddr*)&srv, sizeof(srv)) < HDR_SIZE) //envia o DISCONNECT
+            return false;
  
          // Aguarda até 3 ACKs de desconexão
          for (int i = 0; i < 3; i++) {
              uint8_t rbuf[HDR_SIZE];
              sockaddr_in sa; socklen_t sl = sizeof(sa);
-             if (recvfrom(fd, rbuf, HDR_SIZE, 0, (sockaddr*)&sa, &sl) >= HDR_SIZE) {
-                 Header r;
-                 deserialize(r, rbuf);
-                 printHeader(r, "ACK DISCONNECT");
-                 if (r.sf & FLAG_ACK) { //flag ACK recebido
-                     active = false; //desativa a sessão
 
-                     return true;
-                 }
+             if (recvfrom(fd, rbuf, HDR_SIZE, 0, (sockaddr*)&sa, &sl) >= HDR_SIZE) { //se recebeu um pacote
+                Header r;
+                deserialize(r, rbuf);
+                printHeader(r, "Recebido - ACK(DISCONNECT)");
+
+                if (r.sf & FLAG_ACK) { //verifica qual a flag do ACK
+                    active = false; //desativa a sessão
+
+                    return true;
+                }
              }
          }
          return false; //ACK não foi recebido até 3 tentativas
@@ -370,7 +384,7 @@
         serialize(h, buf);
         memcpy(buf + HDR_SIZE, msg.data(), msg.size());
         sendto(fd, buf, HDR_SIZE + msg.size(), 0, (sockaddr*)&srv, sizeof(srv));
-        printHeader(h, "REVIVE");
+        printHeader(h, "Enviado - REVIVE");
 
         //espera REIVE ACK do servidor
         uint8_t rbuf[HDR_SIZE + DATA_MAX];
@@ -380,9 +394,11 @@
 
         Header r;
         deserialize(r, rbuf);
-        printHeader(r, "REVIVE ACK");
-        if (!(r.sf & FLAG_AR)) return false; //verifica se a flag é a correta
-
+        printHeader(r, "Recebido - ACK(REVIVE)");
+        if (!(r.sf & FLAG_AR)) { //verifica se a flag é a correta
+            cerr << "Revive falhou: ACK não recebido ou flag incorreta." << endl;
+            return false; 
+        }
         // Restaura estado após revive
         prevHdr = r;
         active = true;
@@ -419,7 +435,7 @@
          return 1;
      }
  
-     cout << "[OK] Conectado ao servidor." << endl;
+     cout << "Conectado ao servidor." << endl;
  
      // Loop de interação com o usuário para comandos
      string cmd;
@@ -473,4 +489,3 @@
  
      return 0;
  }
- 
