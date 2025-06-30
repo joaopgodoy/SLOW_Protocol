@@ -297,37 +297,47 @@ public:
         return true;
     }
 
-    // realiza o handshake inicial com o servidor
+    // realiza o handshake inicial com o servidor (3-way handshake)
     bool connect() {
         if (active) return true; //se já estiver conectado não fazer nada
 
-        //cria o header com a flag connect
+        // PASSO 1: Envia CONNECT
         Header h;
         h.seq = nextSeq++;
         h.wnd = advertisedWindow(); //janela atual
         h.sf |= FLAG_C; // flag connect
 
-        //envia o header
         uint8_t buf[HDR_SIZE];
         serialize(h, buf);
-        printHeader(h, "Enviado - CONNECT");
-        if (sendto(fd, buf, HDR_SIZE, 0, (sockaddr*)&srv, sizeof(srv)) < HDR_SIZE) //manda o connect
+        printHeader(h, "Enviado - CONNECT (1/3)");
+        if (sendto(fd, buf, HDR_SIZE, 0, (sockaddr*)&srv, sizeof(srv)) < HDR_SIZE)
             return false; 
-        
 
-        // aguarda SETUP
-        uint8_t rbuf[HDR_SIZE + DATA_MAX]; // buffer capaz de armazenar o cabeçalho mais até DATA_MAX bytes de payload.
+        // PASSO 2: Aguarda SETUP do servidor
+        uint8_t rbuf[HDR_SIZE + DATA_MAX];
         sockaddr_in sa; socklen_t sl = sizeof(sa);
-        if (recvfrom(fd, rbuf, sizeof(rbuf), 0, (sockaddr*)&sa, &sl) < HDR_SIZE) //bloqueia (até 5 s) aguardando um pacote de resposta
-            // não foi recebido cabeçalho completo (falha)
+        if (recvfrom(fd, rbuf, sizeof(rbuf), 0, (sockaddr*)&sa, &sl) < HDR_SIZE)
             return false;
 
         Header r;
-        deserialize(r, rbuf); //converter header
-        printHeader(r, "Recebido - ACK(SETUP)");
+        deserialize(r, rbuf);
+        printHeader(r, "Recebido - SETUP (2/3)");
 
-        if (r.ack != 0 || !(r.sf & FLAG_AR)) return false; // verifica a flag
+        if (r.ack != h.seq || !(r.sf & FLAG_AR)) return false; // verifica se ACK confirma nosso CONNECT
         
+        // PASSO 3: Envia ACK final para completar 3-way handshake
+        Header ack_final;
+        ack_final.seq = nextSeq++;
+        ack_final.ack = r.seq; // confirma o SETUP do servidor
+        ack_final.wnd = advertisedWindow();
+        ack_final.sf = FLAG_ACK; // apenas flag ACK
+
+        uint8_t ack_buf[HDR_SIZE];
+        serialize(ack_final, ack_buf);
+        printHeader(ack_final, "Enviado - ACK (3/3)");
+        if (sendto(fd, ack_buf, HDR_SIZE, 0, (sockaddr*)&srv, sizeof(srv)) < HDR_SIZE)
+            return false;
+
         //ajusta estado interno
         prevHdr = r;
         active = hasPrev = true; //sessão ativa e com histório para revive
@@ -335,7 +345,7 @@ public:
         nextSeq = r.seq + 1;
         window_size = r.wnd; //tamanho da janela do servidor
 
-        return true; //handshake bem sucedido
+        return true; //3-way handshake bem sucedido
     }
     
     
