@@ -612,7 +612,7 @@ int main() {
             if (client.disconnect()) //faz o disconnect
                 cout << "Desconectado com sucesso." << endl;
             else {
-                cout << "Fala ao desconecatar." << endl;
+                cout << "Falha ao desconectar." << endl;
             }
             
         } else if (cmd == "revive") {
