@@ -243,6 +243,23 @@ class UDPPeripheral {
         return tamanho; 
     }
 
+    // Remove todos os pacotes com seq <= ack (ACK cumulativo)
+    void removerPacotesAteAck(uint32_t ack) {
+        uint32_t totalRemovido = 0;
+        
+        // Remove todos os pacotes com seq <= ack
+        auto it = pacotesEmTransito.begin();
+        while (it != pacotesEmTransito.end()) {
+            if (it->seq <= ack) {
+                totalRemovido += it->dataSize;
+                bytesInFlight -= it->dataSize;
+                it = pacotesEmTransito.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
     // Função auxiliar para enviar pacote e adicionar à fila
     bool enviarPacoteComTimeout(const uint8_t* buf, size_t len, uint32_t seq, size_t dataSize) {
         if (sendto(fd, buf, len, 0, (sockaddr*)&srv, sizeof(srv)) >= 0) {
@@ -387,8 +404,8 @@ bool sendData(const string& msg) {
                 printHeader(r, "RECEBIDO - ACK (DATA)");
                 
                 if (r.sf & FLAG_ACK) {
-                    // Remove pacote confirmado da fila
-                    uint32_t tamanhoRemovido = removerPacote(r.ack);
+                    // Remove todos os pacotes confirmados até r.ack (ACK cumulativo)
+                    removerPacotesAteAck(r.ack);
                     
                     lastCentralSeq = r.seq;
                     prevHdr = r;
