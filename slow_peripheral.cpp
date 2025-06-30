@@ -2,7 +2,7 @@
  * slow_peripheral_commented.cpp
  * Autores: 
  *  Enzo Tonon Morente - 14568476 
- *  João Pedro Alves Notari Godoy - 14588659
+ *  João Pedro Alves Notari Godoy - 14582076
  *  Letícia Barbosa Neves - 14582076
  * Descrição: Cliente UDP que implementa o protocolo SLOW (Parte 1 do trabalho)
  */
@@ -26,7 +26,10 @@ using namespace std;
 // Tamanho do cabeçalho em bytes e tamanho máximo de dados por pacote
 static const int HDR_SIZE = 32;
 static const int DATA_MAX = 1440;
-static const int MAX_TRIES = 3; // número máximo de tentativas para enviar um pacote
+
+// Constantes de timeout e retransmissão
+static const int TIMEOUT_MS = 2000;     // timeout de 2 segundo
+static const int MAX_RETRIES = 3;       // máximo de retentativas
 
 // Flags do protocolo SLOW (bit flags em h.sf)
 static const uint32_t FLAG_C   = 1 << 4;  // Connect / Disconnect
@@ -175,10 +178,6 @@ class UDPPeripheral {
     uint32_t window_size = 5 * DATA_MAX; // tamanho máximo da janela (5 × 1440 bytes)
     uint32_t bytesInFlight = 0;   // quantos bytes estão aguardando ACK
     vector<PacoteEmTransmissao> pacotesEmTransito; //fila de pacotes em transmissão
-    
-    // Constantes de timeout e retransmissão
-    static const int TIMEOUT_MS = 2000;     // timeout de 1 segundo
-    static const int MAX_RETRIES = 3;       // máximo de retentativas
 
     // Calcula janela anunciada (até 16 bits)
     uint16_t advertisedWindow() const {
@@ -474,15 +473,10 @@ bool sendData(const string& msg) {
     } else {
         // mensagemn pequena é enviada em um único fragmento
 
-        if (msg.size() <= window_size){ //verificar se é possível mandar a mensagem dentro da janela
-            if (!sendFrag(msg.data(), msg.size(), 0, 0, false)) return false; //enviar a mensagem
+        if (!sendFrag(msg.data(), msg.size(), 0, 0, false)) return false; //enviar a mensagem
 
-            return esperaAck(); 
-        }
-        else{ //mensagem maior que a janela, mas menor que o DATA_MAX]
-            cerr << "Mensagem muito grande para a janela atual." << endl;
-            return false;
-        }
+        return esperaAck(); 
+
     }
 }
 
