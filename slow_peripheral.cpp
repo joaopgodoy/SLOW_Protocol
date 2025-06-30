@@ -35,6 +35,8 @@ static const uint32_t FLAG_ACK = 1 << 2;  // Acknowledgment
 static const uint32_t FLAG_AR  = 1 << 1;  // Ack de Revive / Setup
 static const uint32_t FLAG_MB  = 1 << 0;  // More Bit (fragmentação)
 
+function<bool()> esperaAck;
+
 // SID (Session ID): identificador único de sessão, 16 bytes
 struct SID {
     uint8_t b[16];
@@ -175,7 +177,7 @@ class UDPPeripheral {
     vector<PacoteEmTransmissao> pacotesEmTransito; //fila de pacotes em transmissão
     
     // Constantes de timeout e retransmissão
-    static const int TIMEOUT_MS = 1000;     // timeout de 1 segundo
+    static const int TIMEOUT_MS = 2000;     // timeout de 1 segundo
     static const int MAX_RETRIES = 3;       // máximo de retentativas
 
     // Calcula janela anunciada (até 16 bits)
@@ -244,14 +246,11 @@ class UDPPeripheral {
     }
 
     // Remove todos os pacotes com seq <= ack (ACK cumulativo)
-    void removerPacotesAteAck(uint32_t ack) {
-        uint32_t totalRemovido = 0;
-        
+    void removerPacotesAteAck(uint32_t ack) {        
         // Remove todos os pacotes com seq <= ack
         auto it = pacotesEmTransito.begin();
         while (it != pacotesEmTransito.end()) {
             if (it->seq <= ack) {
-                totalRemovido += it->dataSize;
                 bytesInFlight -= it->dataSize;
                 it = pacotesEmTransito.erase(it);
             } else {
@@ -348,12 +347,16 @@ bool sendData(const string& msg) {
     // Verifica timeouts antes de enviar novos dados
     verificarTimeouts();
 
+    std::function<bool(const char*, size_t, uint8_t, uint8_t, bool)> sendFrag;
+
     // Função lambda para enviar cada fragmento
-    auto sendFrag = [&](const char* data, size_t len, uint8_t fid, uint8_t fo, bool more) {
+    sendFrag = [&](const char* data, size_t len, uint8_t fid, uint8_t fo, bool more) {
         //verifica se essa quantidade de bytes pode ser mandada baseada na janela atual
         if (bytesInFlight + len > window_size) {
             cout << "Janela cheia, esperando ACK..." << endl;
-            return false;
+            esperaAck(); // espera ACK de fragmento anterior
+
+            return sendFrag(data, len, fid, fo, more); // tenta enviar novamente
         }
         //monta o header baseado no último header recebido
         Header h = prevHdr;
@@ -377,7 +380,7 @@ bool sendData(const string& msg) {
     };
     
     // Função lambda para esperar ACK de fragmento
-    auto esperaAck = [&]() -> bool {
+    esperaAck = [&]() -> bool {
         auto tempoInicio = std::chrono::steady_clock::now();
         const int TIMEOUT_ESPERA_MS = 5000; // 5 segundos para esperar ACK
         
