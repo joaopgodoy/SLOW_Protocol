@@ -321,6 +321,13 @@ public:
 
         Header r;
         deserialize(r, rbuf);
+        
+        // Ignora pacotes com flags = 0
+        if ((r.sf & 0x1F) == 0) {
+            cout << "Pacote ignorado - flags = 0" << endl;
+            return false;
+        }
+        
         printHeader(r, "Recebido - SETUP (2/3)");
 
         if (r.ack != h.seq || !(r.sf & FLAG_AR)) return false; // verifica se ACK confirma nosso CONNECT
@@ -413,6 +420,12 @@ bool sendData(const string& msg) {
             if (result >= HDR_SIZE) {
                 Header r; 
                 deserialize(r, rbuf);
+                
+                // Ignora pacotes com flags = 0
+                if ((r.sf & 0x1F) == 0) {
+                    continue;
+                }
+                
                 printHeader(r, "RECEBIDO - ACK (DATA)");
                 
                 if (r.sf & FLAG_ACK) {
@@ -514,6 +527,12 @@ bool sendData(const string& msg) {
             if (recvfrom(fd, rbuf, HDR_SIZE, 0, (sockaddr*)&sa, &sl) >= HDR_SIZE) { //se recebeu um pacote
                 Header r;
                 deserialize(r, rbuf);
+                
+                // Ignora pacotes com flags = 0
+                if ((r.sf & 0x1F) == 0) {
+                    continue;
+                }
+                
                 printHeader(r, "Recebido - ACK(DISCONNECT)");
 
                 if (r.sf & FLAG_ACK) { //verifica qual a flag do ACK
@@ -552,6 +571,13 @@ bool sendData(const string& msg) {
 
         Header r;
         deserialize(r, rbuf);
+        
+        // Ignora pacotes com flags = 0
+        if ((r.sf & 0x1F) == 0) {
+            cout << "Pacote ignorado - flags = 0" << endl;
+            return false;
+        }
+        
         printHeader(r, "Recebido - ACK(REVIVE)");
         if (!(r.sf & FLAG_AR)) { //verifica se a flag é a correta
             cerr << "Revive falhou: ACK não recebido ou flag incorreta." << endl;
